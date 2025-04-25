@@ -232,8 +232,6 @@ if VIDEO_FILE is not None:
         else:
             st.success(f"Processamento concluído! Total de veículos: {st.session_state.total}")
 
-        st.subheader("▶ Vídeo Processado")
-        st.video(st.session_state.video_out)
 
         # Botão de download do vídeo
         st.download_button(
