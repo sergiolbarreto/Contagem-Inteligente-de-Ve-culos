@@ -109,67 +109,38 @@ def process_video(input_path, params):
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         st.error("Não foi possível abrir o vídeo.")
-        return None, None, 0, []
+        return None, None, 0
 
-    fps       = cap.get(cv2.CAP_PROP_FPS)
-    w         = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h         = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_f   = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # posição da linha
     line_y   = int(h * params['line_ratio'])
     x0       = int(w * params['start_ratio'])
     x1       = int(w * params['end_ratio'])
+    total_f  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # preparamos o vídeo de saída
-    fourcc   = cv2.VideoWriter_fourcc(*'mp4v')
-    tmp_vid  = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
-    out_vid  = cv2.VideoWriter(tmp_vid.name, fourcc, fps, (w, h))
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    tmp_vid = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+    out_vid = cv2.VideoWriter(tmp_vid.name, fourcc, fps, (w, h))
 
-    # modelos e tracker
     tl_model = YOLO(params['model_path'])
     vm       = YOLO(params['model_path'])
     tracker  = CentroidTracker()
-
-    # **PASSO 2: setup dos ciclos**
-    signal_log         = []      # vai armazenar cada ciclo
-    cycle_count        = 0       # quantos veículos neste ciclo
-    last_state         = None    # para detectar a 1ª mudança
-    current_cycle_start = 0.0    # timestamp em segundos
+    memory, counted, records = {}, set(), []
+    last_state = 'VERMELHO'
     frame_id = 0
-    progress  = st.progress(0)
+    progress = st.progress(0)
 
-    # loop de frames
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        time_s = frame_id / fps
-
-        # 1) detecta estado do semáforo
+        # 1) Estado do semáforo
         state = detect_traffic_light_state(frame, tl_model, default=last_state)
+        last_state = state
 
-        # 2) abre o ciclo inicial
-        if last_state is None:
-            last_state          = state
-            current_cycle_start = time_s
-
-        # 3) detecta transição de ciclo
-        elif state != last_state:
-            # fecha o ciclo anterior
-            signal_log.append({
-                'state':        last_state,
-                'start_time_s': current_cycle_start,
-                'end_time_s':   time_s,
-                'count':        cycle_count
-            })
-            # inicia novo ciclo
-            current_cycle_start = time_s
-            cycle_count         = 0
-            last_state          = state
-
-        # 4) detecção e contagem de veículos
         res = vm.predict(source=frame, imgsz=640, conf=0.5)
         bxs = res[0].boxes.xyxy.cpu().numpy()
         cls = res[0].boxes.cls.cpu().numpy().astype(int)
@@ -180,16 +151,21 @@ def process_video(input_path, params):
         cv2.line(frame, (x0, line_y), (x1, line_y), (255,0,0), 2)
 
         for oid, (cx, cy) in objs.items():
-            prev = tracker.disappeared.get(oid, cy)  # posição anterior
-            # só conta se cruzou a linha E semáforo estiver verde
-            if (oid not in tracker.disappeared
+            prev = memory.get(oid, cy)
+            if (oid not in counted
                 and ((prev < line_y <= cy) or (prev > line_y >= cy))
                 and state == 'VERDE'):
-                cycle_count += 1
+                counted.add(oid)
+                records.append({
+                    'id': oid,
+                    'timestamp_s': frame_id / fps,
+                    'frame': frame_id,
+                    'state': state
+                })
+            memory[oid] = cy
             cv2.circle(frame, (cx, cy), 4, (0,255,0), -1)
 
-        # overlay de status
-        cv2.putText(frame, f"{state} | Cont ciclo: {cycle_count}",
+        cv2.putText(frame, f"{state} | Cont: {len(counted)}",
                     (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0),2)
         out_vid.write(frame)
 
@@ -199,23 +175,10 @@ def process_video(input_path, params):
     cap.release()
     out_vid.release()
 
-    # fecha o último ciclo
-    end_time = frame_id / fps
-    signal_log.append({
-        'state':        last_state,
-        'start_time_s': current_cycle_start,
-        'end_time_s':   end_time,
-        'count':        cycle_count
-    })
-
-    # salva CSV de veículos (como antes)
-    df = pd.DataFrame([{'id': i, 'timestamp_s': r['start_time_s'], 'cycle': idx}
-                       for idx, r in enumerate(signal_log) for i in range(r['count'])])
+    df = pd.DataFrame(records)
     tmp_csv = tempfile.NamedTemporaryFile(suffix='.csv', delete=False)
     df.to_csv(tmp_csv.name, index=False)
-
-    return tmp_vid.name, tmp_csv.name, sum(r['count'] for r in signal_log), signal_log
-
+    return tmp_vid.name, tmp_csv.name, len(df)
 
 # ——————————————
 # Streamlit App
@@ -257,22 +220,35 @@ if VIDEO_FILE is not None:
             'start_ratio': start_ratio,
             'end_ratio':   end_ratio
         }
-        video_out, csv_out, total = process_video(tfile.name, params)
-        st.success(f"Processamento concluído! Total de veículos: {total}")
+        if "video_out" not in st.session_state or "csv_out" not in st.session_state:
+            video_out, csv_out, total = process_video(tfile.name, params)
+            st.session_state.video_out = video_out
+            st.session_state.csv_out = csv_out
+            st.session_state.total = total
+
+            # Também podemos guardar o DataFrame se quiser evitar reler o CSV
+            st.session_state.df = pd.read_csv(csv_out)
+            st.success(f"Processamento concluído! Total de veículos: {total}")
+        else:
+            st.success(f"Processamento concluído! Total de veículos: {st.session_state.total}")
+
+        st.subheader("▶ Vídeo Processado")
+        st.video(st.session_state.video_out)
+
+        # Botão de download do vídeo
+        st.download_button(
+            "📥 Baixar Vídeo",
+            data=open(st.session_state.video_out, "rb"),
+            file_name="video_processado.mp4",
+            mime="video/mp4"
+        )
 
         st.subheader("📊 Dados de Contagem")
-        df = pd.read_csv(csv_out)
-        st.dataframe(df)
-        # mostra ciclos de semáforo
-        st.subheader("⏱️ Ciclos de Semáforo")
-        st.dataframe(pd.DataFrame(signal_log))
-        cycles_df = pd.DataFrame(signal_log)
-        cycles_csv = cycles_df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Baixar Ciclos (CSV)", data=cycles_csv, file_name="signal_cycles.csv")
+        st.dataframe(st.session_state.df)
 
         st.download_button(
             "📥 Baixar CSV",
-            data=open(csv_out, "rb"),
+            data=open(st.session_state.csv_out, "rb"),
             file_name="contagem_veiculos.csv",
             mime="text/csv"
         )
