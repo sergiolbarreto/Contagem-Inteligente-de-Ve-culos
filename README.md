@@ -37,12 +37,11 @@ Além disso, escolhi o YOLOv8 porque ele já vem pré-treinado com um grande con
 Foram utilizados dois vídeos para testar a aplicação e validar o comportamento do sistema em diferentes situações:
 
 - **Vídeo 1**: Apresenta apenas o semáforo na cor verde durante toda a duração. Esse vídeo foi utilizado para validar a contagem contínua de veículos sem interrupções.
-
-![image.png](29bec062-8fea-458d-a6b0-988fbf0716da.png)
+  ![image (10)](https://github.com/user-attachments/assets/ec3fe657-ec40-434b-b490-5a5fae682053)
 
 - **Vídeo 2**: Inicia com o semáforo verde e, em determinado momento, muda para vermelho. Esse caso permite testar a capacidade do sistema de pausar a contagem corretamente enquanto o sinal está fechado.
+![image (11)](https://github.com/user-attachments/assets/d3c26131-9a58-40d4-a387-2cb95bced17f)
 
-![image.png](90ff8987-cf3e-4319-964b-6d475477db26.png)
 
 Ambos os vídeos foram obtidos de bancos de vídeos públicos gratuitos:
 
